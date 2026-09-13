@@ -4,7 +4,22 @@ Pure-Rust OpenSCAD-like modeller (Manifold backend, **no CGAL**).
 
 Targets the [OpenSCAD CheatSheet](https://openscad.org/cheatsheet/index.html) feature set.
 
-## Quick start
+## GUI (OpenSCAD-like)
+
+```bash
+cargo run --release --bin openscad_rs_gui
+```
+
+Layout matches OpenSCAD’s IDE:
+
+- **Left** — code editor (`.scad`)
+- **Right** — 3D preview (drag orbit, scroll zoom)
+- **Bottom** — console
+- **F5** — compile & preview
+- **Ctrl+O / Ctrl+S / Ctrl+E** — open / save / export STL
+
+## Quick start (CLI)
+
 
 ```bash
 cargo build --release

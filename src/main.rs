@@ -1,13 +1,9 @@
-//! openscad_rs — pure-Rust OpenSCAD-like CSG (Manifold backend, no CGAL)
-
-mod ast;
-mod eval;
-mod parser;
-mod stl;
+//! CLI entry point
 
 use anyhow::{bail, Context, Result};
 use manifold_rust::linalg::Vec3;
 use manifold_rust::manifold::Manifold;
+use openscad_rs::stl;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -57,8 +53,7 @@ fn main() -> Result<()> {
         println!("Parsing {}", path.display());
         let source =
             fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        let program = parser::parse(&source).context("parse error")?;
-        eval::evaluate(&program).context("evaluation error")?
+        openscad_rs::compile(&source).context("evaluation error")?
     } else {
         let name = demo.unwrap_or_else(|| "tree".into());
         println!("Building demo: {}", name);
@@ -99,18 +94,7 @@ fn print_help() {
     println!(
         "Usage: openscad_rs [FILE.scad] [--demo NAME] [-o FILE.stl]
 
-Language support:
-  Primitives:  cube sphere cylinder square circle
-  CSG:         union difference intersection hull minkowski
-  Transforms:  translate rotate scale mirror
-  Extrude:     linear_extrude (square/circle children)
-  Control:     if / else, for, assignments
-  Modules:     module name(params) {{ ... }}
-  Functions:   function name(params) = expr;
-  Ranges:      [start:end] [start:step:end]
-  List comps:  [for (x = r) expr]
-  Math:        abs ceil floor round sqrt sin cos tan min max len
-  Specials:    $fn $fa $fs  (segment heuristics)
+Also: openscad_rs_gui  for the OpenSCAD-like editor GUI
 "
     );
 }
