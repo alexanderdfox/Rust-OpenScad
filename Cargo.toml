@@ -1,0 +1,15 @@
+[package]
+name = "openscad_rs"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-platform Rust port of OpenSCAD core (Manifold backend, no CGAL)"
+license = "GPL-2.0-or-later"
+rust-version = "1.75"
+
+[dependencies]
+manifold-rust = "0.13"
+anyhow = "1.0"
+
+[profile.release]
+lto = true
+codegen-units = 1
