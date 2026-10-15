@@ -3,6 +3,7 @@
 use crate::ast::*;
 use anyhow::{bail, Result};
 use manifold_rust::linalg::{Vec2, Vec3};
+use manifold_rust::types::MeshGL;
 use manifold_rust::manifold::Manifold;
 use std::collections::HashMap;
 use std::f64::consts::PI;
@@ -19,7 +20,7 @@ struct FunctionDef {
     body: Expr,
 }
 
-pub fn evaluate(program: &Program) -> Result<Manifold> {
+pub fn evaluate(program: &Program) -> Result<crate::Model> {
     let mut ctx = EvalCtx::new();
     // First pass: collect top-level module/function defs
     for stmt in &program.statements {
@@ -45,24 +46,126 @@ pub fn evaluate(program: &Program) -> Result<Manifold> {
             _ => {}
         }
     }
-    let mut parts = Vec::new();
+    let mut parts: Vec<crate::ColoredPart> = Vec::new();
     for stmt in &program.statements {
         match stmt {
             Statement::ModuleDef { .. } | Statement::FunctionDef { .. } => {}
             _ => {
-                if let Some(m) = ctx.eval_statement(stmt)? {
-                    parts.push(m);
-                }
+                parts.extend(ctx.eval_statement(stmt)?);
             }
         }
     }
-    Ok(union_all(parts))
+    Ok(crate::Model { parts })
+}
+
+/// Public helper used by `Model::solid()`.
+pub fn union_manifolds(parts: Vec<Manifold>) -> Manifold {
+    union_all(parts)
+}
+
+fn wrap_part(color: Option<crate::Rgba>, solid: Manifold) -> crate::ColoredPart {
+    crate::ColoredPart { solid, color }
+}
+
+fn wrap_one(color: Option<crate::Rgba>, solid: Manifold) -> Vec<crate::ColoredPart> {
+    vec![wrap_part(color, solid)]
+}
+
+
+
+/// RGBA 0..1
+pub use crate::Rgba;
+
+fn parse_color_name(name: &str) -> Option<Rgba> {
+    // OpenSCAD / SVG-ish named colors (subset)
+    let n = name.trim().to_ascii_lowercase();
+    let c: Option<[f32; 3]> = match n.as_str() {
+        "black" => Some([0., 0., 0.]),
+        "white" => Some([1., 1., 1.]),
+        "red" => Some([1., 0., 0.]),
+        "green" => Some([0., 1., 0.]),
+        "blue" => Some([0., 0., 1.]),
+        "yellow" => Some([1., 1., 0.]),
+        "cyan" | "aqua" => Some([0., 1., 1.]),
+        "magenta" | "fuchsia" => Some([1., 0., 1.]),
+        "orange" => Some([1., 0.647, 0.]),
+        "purple" => Some([0.5, 0., 0.5]),
+        "pink" => Some([1., 0.75, 0.8]),
+        "gray" | "grey" => Some([0.5, 0.5, 0.5]),
+        "silver" => Some([0.75, 0.75, 0.75]),
+        "maroon" => Some([0.5, 0., 0.]),
+        "olive" => Some([0.5, 0.5, 0.]),
+        "lime" => Some([0., 1., 0.]),
+        "teal" => Some([0., 0.5, 0.5]),
+        "navy" => Some([0., 0., 0.5]),
+        "brown" => Some([0.65, 0.16, 0.16]),
+        "gold" => Some([1., 0.84, 0.]),
+        "coral" => Some([1., 0.5, 0.31]),
+        "salmon" => Some([0.98, 0.5, 0.45]),
+        "tan" => Some([0.82, 0.71, 0.55]),
+        "beige" => Some([0.96, 0.96, 0.86]),
+        "ivory" => Some([1., 1., 0.94]),
+        "khaki" => Some([0.94, 0.9, 0.55]),
+        "lavender" => Some([0.9, 0.9, 0.98]),
+        "indigo" => Some([0.29, 0., 0.51]),
+        "violet" => Some([0.93, 0.51, 0.93]),
+        "turquoise" => Some([0.25, 0.88, 0.82]),
+        "steelblue" => Some([0.27, 0.51, 0.71]),
+        "skyblue" => Some([0.53, 0.81, 0.92]),
+        "tomato" => Some([1., 0.39, 0.28]),
+        "chocolate" => Some([0.82, 0.41, 0.12]),
+        "crimson" => Some([0.86, 0.08, 0.24]),
+        "darkgreen" => Some([0., 0.39, 0.]),
+        "darkblue" => Some([0., 0., 0.55]),
+        "darkred" => Some([0.55, 0., 0.]),
+        "lightgray" | "lightgrey" => Some([0.83, 0.83, 0.83]),
+        "lightblue" => Some([0.68, 0.85, 0.9]),
+        "lightgreen" => Some([0.56, 0.93, 0.56]),
+        _ => None,
+    };
+    c.map(|rgb| [rgb[0], rgb[1], rgb[2], 1.0])
+}
+
+fn parse_hex_color(s: &str) -> Option<Rgba> {
+    let s = s.trim().trim_start_matches('#');
+    let (r, g, b, a) = match s.len() {
+        3 => {
+            let r = u8::from_str_radix(&s[0..1].repeat(2), 16).ok()? as f32 / 255.0;
+            let g = u8::from_str_radix(&s[1..2].repeat(2), 16).ok()? as f32 / 255.0;
+            let b = u8::from_str_radix(&s[2..3].repeat(2), 16).ok()? as f32 / 255.0;
+            (r, g, b, 1.0)
+        }
+        4 => {
+            let r = u8::from_str_radix(&s[0..1].repeat(2), 16).ok()? as f32 / 255.0;
+            let g = u8::from_str_radix(&s[1..2].repeat(2), 16).ok()? as f32 / 255.0;
+            let b = u8::from_str_radix(&s[2..3].repeat(2), 16).ok()? as f32 / 255.0;
+            let a = u8::from_str_radix(&s[3..4].repeat(2), 16).ok()? as f32 / 255.0;
+            (r, g, b, a)
+        }
+        6 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()? as f32 / 255.0;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()? as f32 / 255.0;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()? as f32 / 255.0;
+            (r, g, b, 1.0)
+        }
+        8 => {
+            let r = u8::from_str_radix(&s[0..2], 16).ok()? as f32 / 255.0;
+            let g = u8::from_str_radix(&s[2..4], 16).ok()? as f32 / 255.0;
+            let b = u8::from_str_radix(&s[4..6], 16).ok()? as f32 / 255.0;
+            let a = u8::from_str_radix(&s[6..8], 16).ok()? as f32 / 255.0;
+            (r, g, b, a)
+        }
+        _ => return None,
+    };
+    Some([r, g, b, a])
 }
 
 struct EvalCtx {
     vars: HashMap<String, Value>,
     modules: HashMap<String, ModuleDef>,
     functions: HashMap<String, FunctionDef>,
+    /// Active display color from enclosing `color()` (innermost wins).
+    color: Option<Rgba>,
 }
 
 impl EvalCtx {
@@ -83,6 +186,7 @@ impl EvalCtx {
             vars,
             modules: HashMap::new(),
             functions: HashMap::new(),
+            color: None,
         }
     }
 
@@ -91,6 +195,7 @@ impl EvalCtx {
             vars: self.vars.clone(),
             modules: self.modules.clone(),
             functions: self.functions.clone(),
+            color: self.color,
         }
     }
 
@@ -119,22 +224,20 @@ impl EvalCtx {
         }
     }
 
-    fn eval_statement(&mut self, stmt: &Statement) -> Result<Option<Manifold>> {
+    fn eval_statement(&mut self, stmt: &Statement) -> Result<Vec<crate::ColoredPart>> {
         match stmt {
             Statement::Assign { name, value } => {
                 let v = self.eval_expr(value)?;
                 self.vars.insert(name.clone(), v);
-                Ok(None)
+                Ok(vec![])
             }
-            Statement::ModuleDef { .. } | Statement::FunctionDef { .. } => Ok(None),
+            Statement::ModuleDef { .. } | Statement::FunctionDef { .. } => Ok(vec![]),
             Statement::Block(stmts) => {
                 let mut parts = Vec::new();
                 for s in stmts {
-                    if let Some(m) = self.eval_statement(s)? {
-                        parts.push(m);
-                    }
+                    parts.extend(self.eval_statement(s)?);
                 }
-                Ok(Some(union_all(parts)))
+                Ok(parts)
             }
             Statement::ModuleCall {
                 name,
@@ -151,7 +254,7 @@ impl EvalCtx {
                 } else if let Some(eb) = else_branch {
                     self.eval_statement(eb)
                 } else {
-                    Ok(None)
+                    Ok(vec![])
                 }
             }
             Statement::For { name, range, body } => {
@@ -160,22 +263,22 @@ impl EvalCtx {
                 for v in values {
                     let mut child = self.child_scope();
                     child.vars.insert(name.clone(), v);
-                    if let Some(m) = child.eval_statement(body)? {
-                        parts.push(m);
-                    }
+                    parts.extend(child.eval_statement(body)?);
                 }
-                Ok(Some(union_all(parts)))
+                Ok(parts)
             }
-            Statement::ExprStmt(_) => Ok(None),
+            Statement::ExprStmt(_) => Ok(vec![]),
         }
     }
+
+
 
     fn eval_module_call(
         &mut self,
         name: &str,
         args: &[Arg],
         children: &[Statement],
-    ) -> Result<Option<Manifold>> {
+    ) -> Result<Vec<crate::ColoredPart>> {
         // User-defined module?
         if let Some(def) = self.modules.get(name).cloned() {
             return self.call_user_module(&def, args, children);
@@ -191,59 +294,67 @@ impl EvalCtx {
             .collect();
 
         match name {
-            "cube" => Ok(Some(self.builtin_cube(&named, &positional)?)),
-            "sphere" => Ok(Some(self.builtin_sphere(&named, &positional)?)),
-            "cylinder" => Ok(Some(self.builtin_cylinder(&named, &positional)?)),
-            "circle" => Ok(Some(self.builtin_circle_2d(&named, &positional)?)),
-            "square" => Ok(Some(self.builtin_square_2d(&named, &positional)?)),
-            "polygon" => Ok(Some(self.builtin_polygon(&named, &positional)?)),
-            "polyhedron" => Ok(Some(self.builtin_polyhedron(&named, &positional)?)),
+            "cube" => Ok({ let __s = self.builtin_cube(&named, &positional)?; wrap_one(self.color, __s) }),
+            "sphere" => Ok({ let __s = self.builtin_sphere(&named, &positional)?; wrap_one(self.color, __s) }),
+            "cylinder" => Ok({ let __s = self.builtin_cylinder(&named, &positional)?; wrap_one(self.color, __s) }),
+            "circle" => Ok({ let __s = self.builtin_circle_2d(&named, &positional)?; wrap_one(self.color, __s) }),
+            "square" => Ok({ let __s = self.builtin_square_2d(&named, &positional)?; wrap_one(self.color, __s) }),
+            "polygon" => Ok({ let __s = self.builtin_polygon(&named, &positional)?; wrap_one(self.color, __s) }),
+            "polyhedron" => Ok({ let __s = self.builtin_polyhedron(&named, &positional)?; wrap_one(self.color, __s) }),
             "resize" => {
-                // resize([x,y,z]) children — approximate via bounding-box scale
-                let target = self.vec3_arg(&named, &positional, "newsize", 0).or_else(|_| {
-                    self.vec3_arg(&named, &positional, "v", 0)
-                }).unwrap_or(Vec3::new(1.0, 1.0, 1.0));
+                let target = self
+                    .vec3_arg(&named, &positional, "newsize", 0)
+                    .or_else(|_| self.vec3_arg(&named, &positional, "v", 0))
+                    .unwrap_or(Vec3::new(1.0, 1.0, 1.0));
                 let body = union_all(self.eval_children(children)?);
                 let bb = body.bounding_box();
-                let sx = if (bb.max.x - bb.min.x).abs() > 1e-12 { target.x / (bb.max.x - bb.min.x) } else { 1.0 };
-                let sy = if (bb.max.y - bb.min.y).abs() > 1e-12 { target.y / (bb.max.y - bb.min.y) } else { 1.0 };
-                let sz = if (bb.max.z - bb.min.z).abs() > 1e-12 { target.z / (bb.max.z - bb.min.z) } else { 1.0 };
-                // auto: if target component is 0, keep aspect
-                let (sx, sy, sz) = {
-                    let mut sx = sx; let mut sy = sy; let mut sz = sz;
-                    if target.x == 0.0 { sx = sy.max(sz); }
-                    if target.y == 0.0 { sy = sx.max(sz); }
-                    if target.z == 0.0 { sz = sx.max(sy); }
-                    (sx, sy, sz)
+                let mut sx = if (bb.max.x - bb.min.x).abs() > 1e-12 {
+                    target.x / (bb.max.x - bb.min.x)
+                } else {
+                    1.0
                 };
-                Ok(Some(body.scale(Vec3::new(sx, sy, sz))))
+                let mut sy = if (bb.max.y - bb.min.y).abs() > 1e-12 {
+                    target.y / (bb.max.y - bb.min.y)
+                } else {
+                    1.0
+                };
+                let mut sz = if (bb.max.z - bb.min.z).abs() > 1e-12 {
+                    target.z / (bb.max.z - bb.min.z)
+                } else {
+                    1.0
+                };
+                if target.x == 0.0 {
+                    sx = sy.max(sz);
+                }
+                if target.y == 0.0 {
+                    sy = sx.max(sz);
+                }
+                if target.z == 0.0 {
+                    sz = sx.max(sy);
+                }
+                Ok({ let __s = body.scale(Vec3::new(sx, sy, sz)); wrap_one(self.color, __s) })
             }
             "multmatrix" => {
-                // multmatrix(m) with 4x3 or 4x4 list — apply linear part if possible
-                // For now: if m is list of 4 rows, extract translation from last column-ish
                 let body = union_all(self.eval_children(children)?);
-                Ok(Some(body)) // passthrough until full Mat3x4 parse
+                Ok({ let __s = body; wrap_one(self.color, __s) }) // full Mat3x4 not yet applied
             }
-            "offset" => {
-                // 2D offset — not fully supported; passthrough children
-                Ok(Some(union_all(self.eval_children(children)?)))
-            }
-            "projection" => {
-                // projection(cut=true) — approximate by hull of children flattened
-                Ok(Some(union_all(self.eval_children(children)?)))
-            }
+            "offset" => Ok(self.eval_children_parts(children)?),
+            "projection" => Ok({ let __s = union_all(self.eval_children(children)?); wrap_one(self.color, __s) }),
             "import" | "surface" => {
                 bail!("{}() file import not implemented yet", name)
             }
-            "union" => Ok(Some(union_all(self.eval_children(children)?))),
-            "difference" => Ok(Some(difference_all(self.eval_children(children)?))),
-            "intersection" => Ok(Some(intersection_all(self.eval_children(children)?))),
+            "union" => Ok(self.eval_children_parts(children)?),
+            "difference" => Ok({ let __s = difference_all(self.eval_children(children)?); wrap_one(self.color, __s) }),
+            "intersection" => Ok({ let __s = intersection_all(self.eval_children(children)?); wrap_one(self.color, __s) }),
             "translate" => {
                 let v = self.vec3_arg(&named, &positional, "v", 0)?;
-                Ok(Some(union_all(self.eval_children(children)?).translate(v)))
+                let mut parts = self.eval_children_parts(children)?;
+                for p in &mut parts {
+                    p.solid = p.solid.translate(v);
+                }
+                Ok(parts)
             }
             "rotate" => {
-                // rotate([x,y,z]) euler degrees OR rotate(a, [axis])
                 let body = union_all(self.eval_children(children)?);
                 if positional.len() >= 2 || (named.contains_key("a") && named.contains_key("v")) {
                     let angle = if let Some(e) = named.get("a") {
@@ -256,63 +367,71 @@ impl EvalCtx {
                     } else {
                         self.eval_vec3(positional[1])?
                     };
-                    // Convert axis-angle to approximate euler via rotation around dominant axis
                     let len = (axis.x * axis.x + axis.y * axis.y + axis.z * axis.z).sqrt();
                     if len < 1e-12 {
-                        Ok(Some(body))
+                        Ok({ let __s = body; wrap_one(self.color, __s) })
                     } else {
                         let ax = axis.x / len;
                         let ay = axis.y / len;
                         let az = axis.z / len;
-                        // If axis is aligned with X/Y/Z, simple
                         if ax.abs() > 0.99 {
-                            Ok(Some(body.rotate(angle * ax.signum(), 0.0, 0.0)))
+                            Ok({ let __s = body.rotate(angle * ax.signum(), 0.0, 0.0); wrap_one(self.color, __s) })
                         } else if ay.abs() > 0.99 {
-                            Ok(Some(body.rotate(0.0, angle * ay.signum(), 0.0)))
+                            Ok({ let __s = body.rotate(0.0, angle * ay.signum(), 0.0); wrap_one(self.color, __s) })
                         } else if az.abs() > 0.99 {
-                            Ok(Some(body.rotate(0.0, 0.0, angle * az.signum())))
+                            Ok({ let __s = body.rotate(0.0, 0.0, angle * az.signum()); wrap_one(self.color, __s) })
                         } else {
-                            // general axis: use Manifold rotate only supports euler; do ZYX approx
-                            Ok(Some(body.rotate(angle * ax, angle * ay, angle * az)))
+                            Ok({ let __s = body.rotate(angle * ax, angle * ay, angle * az); wrap_one(self.color, __s) })
                         }
                     }
                 } else {
                     let a = self.vec3_arg(&named, &positional, "a", 0)?;
-                    Ok(Some(body.rotate(a.x, a.y, a.z)))
+                    Ok({ let __s = body.rotate(a.x, a.y, a.z); wrap_one(self.color, __s) })
                 }
             }
             "scale" => {
                 let v = self.vec3_arg(&named, &positional, "v", 0)?;
-                Ok(Some(union_all(self.eval_children(children)?).scale(v)))
+                let mut parts = self.eval_children_parts(children)?;
+                for p in &mut parts {
+                    p.solid = p.solid.scale(v);
+                }
+                Ok(parts)
             }
             "mirror" => {
                 let v = self.vec3_arg(&named, &positional, "v", 0)?;
-                Ok(Some(union_all(self.eval_children(children)?).mirror(v)))
+                let mut parts = self.eval_children_parts(children)?;
+                for p in &mut parts {
+                    p.solid = p.solid.mirror(v);
+                }
+                Ok(parts)
             }
             "hull" => {
                 let kids = self.eval_children(children)?;
                 if kids.is_empty() {
-                    return Ok(Some(Manifold::empty()));
+                    return Ok({ let __s = Manifold::empty(); wrap_one(self.color, __s) });
                 }
-                Ok(Some({
-                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Manifold::hull_manifolds(&kids))) {
-                        Ok(m) => m,
-                        Err(_) => {
-                            eprintln!("warning: hull failed (non-manifold); using union");
-                            union_all(kids)
-                        }
+                let solid = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    Manifold::hull_manifolds(&kids)
+                })) {
+                    Ok(m) => m,
+                    Err(_) => {
+                        eprintln!("warning: hull failed (non-manifold); using union");
+                        union_all(kids)
                     }
-                }))
+                };
+                Ok({ let __s = solid; wrap_one(self.color, __s) })
             }
             "minkowski" => {
                 let kids = self.eval_children(children)?;
                 if kids.is_empty() {
-                    return Ok(Some(Manifold::empty()));
+                    return Ok({ let __s = Manifold::empty(); wrap_one(self.color, __s) });
                 }
                 let mut it = kids.into_iter();
                 let mut acc = it.next().unwrap();
                 for p in it {
-                    acc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| acc.minkowski_sum(&p))) {
+                    acc = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        acc.minkowski_sum(&p)
+                    })) {
                         Ok(m) => m,
                         Err(_) => {
                             eprintln!("warning: minkowski failed; keeping left operand");
@@ -320,23 +439,38 @@ impl EvalCtx {
                         }
                     };
                 }
-                Ok(Some(acc))
+                Ok({ let __s = acc; wrap_one(self.color, __s) })
             }
-            "linear_extrude" => Ok(Some(self.builtin_linear_extrude(&named, &positional, children)?)),
-            "rotate_extrude" => Ok(Some(self.builtin_rotate_extrude(&named, &positional, children)?)),
-            "group" | "color" | "render" | "debug" | "background" => {
-                Ok(Some(union_all(self.eval_children(children)?)))
+            "linear_extrude" => Ok({
+                let __s = self.builtin_linear_extrude(&named, &positional, children)?;
+                wrap_one(self.color, __s)
+            }),
+            "rotate_extrude" => Ok({
+                let __s = self.builtin_rotate_extrude(&named, &positional, children)?;
+                wrap_one(self.color, __s)
+            }),
+            "color" => {
+                let rgba = self.parse_color_args(&named, &positional)?;
+                let prev = self.color;
+                self.color = Some(rgba);
+                let mut parts = self.eval_children_parts(children)?;
+                for p in &mut parts {
+                    if p.color.is_none() {
+                        p.color = Some(rgba);
+                    }
+                }
+                self.color = prev;
+                Ok(parts)
             }
-            "echo" => {
-                // no-op geometry
-                Ok(None)
+            "group" | "render" | "debug" | "background" => {
+                Ok(self.eval_children_parts(children)?)
             }
-            "children" => {
-                // children() — not fully supported without parent stack
-                Ok(None)
-            }
+            "echo" => Ok(vec![]),
+            "children" => Ok(vec![]),
             "text" => {
-                bail!("text() is not implemented yet (no font engine); use linear_extrude+shapes instead")
+                bail!(
+                    "text() is not implemented yet (no font engine); use linear_extrude+shapes instead"
+                )
             }
             other => bail!("unsupported module '{}'", other),
         }
@@ -347,7 +481,7 @@ impl EvalCtx {
         def: &ModuleDef,
         args: &[Arg],
         children: &[Statement],
-    ) -> Result<Option<Manifold>> {
+    ) -> Result<Vec<crate::ColoredPart>> {
         let mut child = self.child_scope();
         // bind parameters
         let named = collect_named(args);
@@ -378,21 +512,25 @@ impl EvalCtx {
 
         let mut parts = Vec::new();
         for s in &def.body {
-            if let Some(m) = child.eval_statement(s)? {
-                parts.push(m);
-            }
+            parts.extend(child.eval_statement(s)?);
         }
-        Ok(Some(union_all(parts)))
+        Ok(parts)
+    }
+
+    fn eval_children_parts(&mut self, children: &[Statement]) -> Result<Vec<crate::ColoredPart>> {
+        let mut out = Vec::new();
+        for c in children {
+            out.extend(self.eval_statement(c)?);
+        }
+        Ok(out)
     }
 
     fn eval_children(&mut self, children: &[Statement]) -> Result<Vec<Manifold>> {
-        let mut out = Vec::new();
-        for c in children {
-            if let Some(m) = self.eval_statement(c)? {
-                out.push(m);
-            }
-        }
-        Ok(out)
+        Ok(self
+            .eval_children_parts(children)?
+            .into_iter()
+            .map(|p| p.solid)
+            .collect())
     }
 
     // ---- builtins ----
@@ -540,6 +678,133 @@ impl EvalCtx {
         }
     }
 
+    fn parse_color_args(
+        &mut self,
+        named: &HashMap<String, &Expr>,
+        positional: &[&Expr],
+    ) -> Result<Rgba> {
+        // color(c) / color(c, alpha) / color(r,g,b) / color(r,g,b,a)
+        // c = name | "#hex" | [r,g,b] | [r,g,b,a]  (components 0..1)
+        let alpha_override = if let Some(e) = named.get("alpha") {
+            Some(self.eval_number(e)? as f32)
+        } else if positional.len() >= 2 {
+            // could be alpha if first is string/vec, or g if first is number
+            None
+        } else {
+            None
+        };
+
+        // Named "c"
+        if let Some(e) = named.get("c") {
+            let val = self.eval_expr(e)?;
+            let mut rgba = self.value_to_rgba(&val)?;
+            if let Some(a) = alpha_override {
+                rgba[3] = a.clamp(0.0, 1.0);
+            }
+            return Ok(rgba);
+        }
+
+        if positional.is_empty() {
+            return Ok([1.0, 1.0, 1.0, 1.0]);
+        }
+
+        let v0 = self.eval_expr(positional[0])?;
+        match &v0 {
+            Value::String(s) => {
+                let mut rgba = parse_hex_color(s)
+                    .or_else(|| parse_color_name(s))
+                    .unwrap_or([1.0, 1.0, 1.0, 1.0]);
+                // second positional = alpha
+                if positional.len() >= 2 {
+                    rgba[3] = (self.eval_number(positional[1])? as f32).clamp(0.0, 1.0);
+                }
+                if let Some(a) = alpha_override {
+                    rgba[3] = a.clamp(0.0, 1.0);
+                }
+                Ok(rgba)
+            }
+            Value::List(_) | Value::Vec2(_, _) | Value::Vec3(_) => {
+                let mut rgba = self.value_to_rgba(&v0)?;
+                if positional.len() >= 2 {
+                    // color([r,g,b], alpha)
+                    rgba[3] = (self.eval_number(positional[1])? as f32).clamp(0.0, 1.0);
+                }
+                if let Some(a) = alpha_override {
+                    rgba[3] = a.clamp(0.0, 1.0);
+                }
+                Ok(rgba)
+            }
+            Value::Number(r) => {
+                // color(r,g,b[,a])
+                let g = if positional.len() >= 2 {
+                    self.eval_number(positional[1])?
+                } else {
+                    0.0
+                };
+                let b = if positional.len() >= 3 {
+                    self.eval_number(positional[2])?
+                } else {
+                    0.0
+                };
+                let a = if positional.len() >= 4 {
+                    self.eval_number(positional[3])?
+                } else {
+                    1.0
+                };
+                Ok([
+                    (*r as f32).clamp(0.0, 1.0),
+                    (g as f32).clamp(0.0, 1.0),
+                    (b as f32).clamp(0.0, 1.0),
+                    (a as f32).clamp(0.0, 1.0),
+                ])
+            }
+            other => bail!("unsupported color() argument: {:?}", other),
+        }
+    }
+
+    fn value_to_rgba(&self, v: &Value) -> Result<Rgba> {
+        match v {
+            Value::String(s) => Ok(parse_hex_color(s)
+                .or_else(|| parse_color_name(s))
+                .unwrap_or([1.0, 1.0, 1.0, 1.0])),
+            Value::Vec3(v) => Ok([
+                (v.x as f32).clamp(0.0, 1.0),
+                (v.y as f32).clamp(0.0, 1.0),
+                (v.z as f32).clamp(0.0, 1.0),
+                1.0,
+            ]),
+            Value::Vec2(x, y) => Ok([
+                (*x as f32).clamp(0.0, 1.0),
+                (*y as f32).clamp(0.0, 1.0),
+                0.0,
+                1.0,
+            ]),
+            Value::List(list) => {
+                let n = |i: usize| -> Result<f32> {
+                    Ok(list
+                        .get(i)
+                        .map(|v| v.as_number())
+                        .transpose()?
+                        .unwrap_or(0.0) as f32)
+                };
+                let r = n(0)?.clamp(0.0, 1.0);
+                let g = n(1)?.clamp(0.0, 1.0);
+                let b = n(2)?.clamp(0.0, 1.0);
+                let a = if list.len() >= 4 {
+                    n(3)?.clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                Ok([r, g, b, a])
+            }
+            Value::Number(n) => {
+                let x = (*n as f32).clamp(0.0, 1.0);
+                Ok([x, x, x, 1.0])
+            }
+            other => bail!("cannot interpret {:?} as color", other),
+        }
+    }
+
     fn builtin_polyhedron(
         &mut self,
         named: &HashMap<String, &Expr>,
@@ -580,17 +845,29 @@ impl EvalCtx {
             _ => bail!("polyhedron points must be a list"),
         }
         let mut indices: Vec<u32> = Vec::new();
+        // Face index lists of length 2/3 are often promoted to Vec2/Vec3 by
+        // list_to_vec_value — accept those forms as well as plain Lists.
+        fn face_indices(face: &Value) -> Result<Vec<u32>> {
+            match face {
+                Value::List(c) => c
+                    .iter()
+                    .map(|v| Ok(v.as_number()?.round() as u32))
+                    .collect(),
+                Value::Vec2(a, b) => Ok(vec![a.round() as u32, b.round() as u32]),
+                Value::Vec3(v) => Ok(vec![
+                    v.x.round() as u32,
+                    v.y.round() as u32,
+                    v.z.round() as u32,
+                ]),
+                Value::Number(n) => Ok(vec![n.round() as u32]),
+                other => bail!("bad face: {:?}", other),
+            }
+        }
         match self.eval_expr(fe)? {
             Value::List(faces) => {
                 for face in faces {
-                    let idxs: Vec<u32> = match face {
-                        Value::List(c) => c
-                            .iter()
-                            .map(|v| Ok(v.as_number()?.round() as u32))
-                            .collect::<Result<_>>()?,
-                        _ => bail!("bad face"),
-                    };
-                    // triangulate fan
+                    let idxs = face_indices(&face)?;
+                    // triangulate fan (OpenSCAD faces may be quads or n-gons)
                     if idxs.len() >= 3 {
                         for i in 1..idxs.len() - 1 {
                             indices.push(idxs[0]);
@@ -600,9 +877,75 @@ impl EvalCtx {
                     }
                 }
             }
-            _ => bail!("polyhedron faces must be a list"),
+            // single face given as vec/list
+            other => {
+                let idxs = face_indices(&other)?;
+                if idxs.len() >= 3 {
+                    for i in 1..idxs.len() - 1 {
+                        indices.push(idxs[0]);
+                        indices.push(idxs[i]);
+                        indices.push(idxs[i + 1]);
+                    }
+                } else {
+                    bail!("polyhedron faces must be a list of index lists");
+                }
+            }
         }
-        // Convex hull of points (exact face mesh would need MeshGL construction)
+        if verts.is_empty() {
+            return Ok(Manifold::empty());
+        }
+
+        let nvert = (verts.len() / 3) as u32;
+        // Drop out-of-range triangles so a bad index doesn't poison the whole mesh
+        let mut clean: Vec<u32> = Vec::with_capacity(indices.len());
+        for tri in indices.chunks(3) {
+            if tri.len() == 3 && tri[0] < nvert && tri[1] < nvert && tri[2] < nvert
+                && tri[0] != tri[1] && tri[1] != tri[2] && tri[0] != tri[2]
+            {
+                clean.extend_from_slice(tri);
+            }
+        }
+
+        if !clean.is_empty() {
+            let try_import = |tris: Vec<u32>| -> Option<Manifold> {
+                let mesh = MeshGL {
+                    num_prop: 3u32,
+                    vert_properties: verts.clone(),
+                    tri_verts: tris,
+                    ..Default::default()
+                };
+                let m = Manifold::from_mesh_gl_robust(&mesh);
+                if m.status() == manifold_rust::types::Error::NoError && m.num_tri() > 0 {
+                    return Some(m);
+                }
+                let m2 = Manifold::from_mesh_gl(&mesh);
+                if m2.status() == manifold_rust::types::Error::NoError && m2.num_tri() > 0 {
+                    return Some(m2);
+                }
+                None
+            };
+
+            if let Some(m) = try_import(clean.clone()) {
+                return Ok(m);
+            }
+            // OpenSCAD face winding is often opposite of Manifold's CCW-from-outside
+            let mut reversed = Vec::with_capacity(clean.len());
+            for tri in clean.chunks(3) {
+                reversed.push(tri[0]);
+                reversed.push(tri[2]);
+                reversed.push(tri[1]);
+            }
+            if let Some(m) = try_import(reversed) {
+                return Ok(m);
+            }
+            eprintln!(
+                "warning: polyhedron MeshGL import failed ({} verts, {} tris); using convex hull fallback",
+                nvert,
+                clean.len() / 3
+            );
+        }
+
+        // Hull fallback only when faces missing or mesh import failed
         let mut pts3 = Vec::new();
         for i in 0..verts.len() / 3 {
             pts3.push(Vec3::new(
@@ -611,10 +954,6 @@ impl EvalCtx {
                 verts[i * 3 + 2] as f64,
             ));
         }
-        if pts3.is_empty() {
-            return Ok(Manifold::empty());
-        }
-        // Convex hull of points as approximation when full mesh import is hard
         Ok(Manifold::hull(&pts3))
     }
 
@@ -846,28 +1185,13 @@ impl EvalCtx {
                 }
             }
             Expr::Vector(elems) => {
-                let mut nums = Vec::new();
+                // OpenSCAD allows nested vectors: [[x,y,z], ...] or [v1, v2]
+                // Only promote pure numeric 2/3-element lists to Vec2/Vec3.
+                let mut vals = Vec::with_capacity(elems.len());
                 for e in elems {
-                    match self.eval_expr(e)? {
-                        Value::Number(n) => nums.push(n),
-                        Value::List(list) => {
-                            // flatten one level of numbers
-                            for v in list {
-                                if let Value::Number(n) = v {
-                                    nums.push(n);
-                                }
-                            }
-                        }
-                        other => bail!("vector element must be number, got {:?}", other),
-                    }
+                    vals.push(self.eval_expr(e)?);
                 }
-                match nums.len() {
-                    2 => Ok(Value::Vec2(nums[0], nums[1])),
-                    3 => Ok(Value::Vec3(Vec3::new(nums[0], nums[1], nums[2]))),
-                    _ => Ok(Value::List(
-                        nums.into_iter().map(Value::Number).collect(),
-                    )),
-                }
+                Ok(list_to_vec_value(vals))
             }
             Expr::Range { start, step, end } => {
                 let s = self.eval_number(start)?;
@@ -940,7 +1264,25 @@ impl EvalCtx {
                 }
             }
             Expr::Unary { op, expr } => match op {
-                UnaryOp::Neg => Ok(Value::Number(-self.eval_number(expr)?)),
+                UnaryOp::Neg => {
+                    let v = self.eval_expr(expr)?;
+                    match v {
+                        Value::Number(n) => Ok(Value::Number(-n)),
+                        Value::Vec2(x, y) => Ok(Value::Vec2(-x, -y)),
+                        Value::Vec3(vv) => Ok(Value::Vec3(Vec3::new(-vv.x, -vv.y, -vv.z))),
+                        Value::List(list) => {
+                            let out: Result<Vec<_>> = list
+                                .into_iter()
+                                .map(|item| match item {
+                                    Value::Number(n) => Ok(Value::Number(-n)),
+                                    other => bail!("cannot negate {:?}", other),
+                                })
+                                .collect();
+                            Ok(list_to_vec_value(out?))
+                        }
+                        other => bail!("cannot negate {:?}", other),
+                    }
+                }
                 UnaryOp::Not => Ok(Value::Bool(!self.eval_bool(expr)?)),
             },
             Expr::Binary { op, left, right } => self.eval_binary(*op, left, right),
@@ -1431,6 +1773,34 @@ fn values_eq(a: &Value, b: &Value) -> bool {
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::String(x), Value::String(y)) => x == y,
         (Value::Undef, Value::Undef) => true,
+        (Value::Vec2(x1, y1), Value::Vec2(x2, y2)) => {
+            (x1 - x2).abs() < 1e-12 && (y1 - y2).abs() < 1e-12
+        }
+        (Value::Vec3(u), Value::Vec3(v)) => {
+            (u.x - v.x).abs() < 1e-12
+                && (u.y - v.y).abs() < 1e-12
+                && (u.z - v.z).abs() < 1e-12
+        }
+        (Value::List(a), Value::List(b)) if a.len() == b.len() => {
+            a.iter().zip(b.iter()).all(|(x, y)| values_eq(x, y))
+        }
+        // Allow comparing Vec3 with 3-number list and vice versa
+        (Value::Vec3(v), Value::List(l)) | (Value::List(l), Value::Vec3(v)) if l.len() == 3 => {
+            matches!(
+                (&l[0], &l[1], &l[2]),
+                (Value::Number(x), Value::Number(y), Value::Number(z))
+                    if (v.x - x).abs() < 1e-12
+                        && (v.y - y).abs() < 1e-12
+                        && (v.z - z).abs() < 1e-12
+            )
+        }
+        (Value::Vec2(x, y), Value::List(l)) | (Value::List(l), Value::Vec2(x, y)) if l.len() == 2 => {
+            matches!(
+                (&l[0], &l[1]),
+                (Value::Number(a), Value::Number(b))
+                    if (x - a).abs() < 1e-12 && (y - b).abs() < 1e-12
+            )
+        }
         _ => false,
     }
 }

@@ -1,15 +1,20 @@
 [package]
 name = "openscad_rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Cross-platform Rust port of OpenSCAD core (Manifold backend, no CGAL)"
+description = "Pure-Rust OpenSCAD-like modeller with Manifold backend (no CGAL)"
 license = "GPL-2.0-or-later"
-rust-version = "1.75"
+rust-version = "1.77"
+authors = ["Alexander Fox"]
+repository = "https://github.com/alexanderdfox/Rust-OpenScad"
+keywords = ["openscad", "cad", "3d", "manifold", "csg"]
+categories = ["graphics", "multimedia::modeling"]
+readme = "README.md"
 
 [dependencies]
 manifold-rust = "0.13"
 anyhow = "1.0"
-eframe = { version = "0.29", optional = true }
+eframe = { version = "0.29", optional = true, default-features = true, features = ["default_fonts"] }
 egui = { version = "0.29", optional = true }
 rfd = { version = "0.15", optional = true }
 
@@ -29,3 +34,4 @@ required-features = ["gui"]
 [profile.release]
 lto = true
 codegen-units = 1
+opt-level = 3
